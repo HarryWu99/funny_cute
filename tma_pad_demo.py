@@ -85,7 +85,7 @@ def demokernel(
     cute.arch.mbarrier_wait(mainloop_pipeline_array_ptr, 0)
     if tx == 0:
         # cute.printf("tAsA={}", tAsA)
-        cute.print_tensor(sA, verbose=True)
+        cute.print_tensor(sA)
 
 @cute.jit
 def demof(
