@@ -19,17 +19,12 @@ import cutlass.pipeline as pipeline
 
 @cute.jit
 def tile_scheduler_get_next(cur_id, group_size, group_size_m, max_m):
-    # tx, _, _ = cute.arch.thread_idx()
-    # if tx == 0 or tx==128:
-    #     cute.printf("cur_id={}, group_size={} group_size_m={} max_m={}", cur_id, group_size, group_size_m, max_m)
     group_id = cur_id // group_size
     id_in_group = cur_id % group_size
     first_pid_m = group_id * group_size_m
     real_group_m = min(max_m - first_pid_m, group_size_m)
     row = id_in_group % real_group_m
     col = id_in_group // real_group_m
-    # if cur_id == 0 or cur_id == 2:
-    #     cute.printf("cur_id={}, id_in_group={} real_group_m={} group_size_m={}", cur_id, id_in_group, real_group_m, group_size_m)
     return first_pid_m+row, col
 
 @cute.kernel
@@ -381,12 +376,7 @@ ref_c = a @ b
 compiled_gemm = cute.compile(gemm_tn, a_ptr, b_ptr, c_ptr, m,n,k,multi_processor_count)
 compiled_gemm(a_ptr, b_ptr, c_ptr)
 
-torch.set_printoptions(sci_mode=False, threshold=float('inf'), linewidth=999999)
-# for i in range(32):
-#     for j in range(16):
-#         print((i, j))
-#         torch.testing.assert_close(c[128*i:128*(i+1), 256*j:256*(j+1)], ref_c[128*i:128*(i+1), 256*j:256*(j+1)], atol=1e-2, rtol=1e-2)
-# i, j = 0, 1
+# torch.set_printoptions(sci_mode=False, threshold=float('inf'), linewidth=999999)
 torch.testing.assert_close(c, ref_c, atol=1e-2, rtol=1e-2)
 
 # warm up
@@ -397,6 +387,8 @@ def get_flops(func):
     start_event = torch.cuda.Event(enable_timing=True)
     end_event = torch.cuda.Event(enable_timing=True)
     torch.cuda.synchronize()
+    for i in range(32):
+        ref_c = a @ b
     start_event.record()
     for _ in range(64):
         func()
@@ -409,4 +401,6 @@ def get_flops(func):
     return total_flop / (per_ms / 1000)
 
 print(f"cublas FLOPS: {get_flops(lambda: torch.mm(a, b)) / 1e12:.3f} TFLOPS")
+import time
+time.sleep(2)
 print(f"cuteDSL FLOPS: {get_flops(lambda: compiled_gemm(a_ptr, b_ptr, c_ptr)) / 1e12:.3f} TFLOPS")
