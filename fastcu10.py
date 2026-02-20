@@ -218,7 +218,15 @@ def gemm_kernel(
             tCrC_dtype.store(tCrC.load().to(Float16))
             # cute.autovec_copy(tCrC_dtype, tCgC[(None,None,None, bm, bn)])
             cute.arch.cp_async_wait_group(0)
-            cute.autovec_copy(tCrC_dtype, tCsC)
+            r2s_atom = cute.make_copy_atom(
+                cute.nvgpu.warp.StMatrix8x8x16bOp(False, 4), Float16,
+            )
+            tiled_copy_c = cute.make_tiled_copy_C(r2s_atom, tiled_mma)
+            thr_copy_c = tiled_copy_c.get_slice(tx-128)
+            tXrC = thr_copy_c.retile(tCrC_dtype)
+            tXsC = thr_copy_c.partition_D(sC)
+            cute.copy(r2s_atom, tXrC, tXsC)
+            # cute.autovec_copy(tCrC_dtype, tCsC)
             print(f"tma_gC={tma_gC}")
             print(f"tma_sC={tma_sC}")
             cute.arch.barrier(barrier_id=10, number_of_threads=256)
