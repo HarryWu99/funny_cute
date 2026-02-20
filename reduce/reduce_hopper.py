@@ -7,7 +7,7 @@ import operator
 from typing import Callable, Optional
 
 import cutlass
-from cutlass import const_expr, Float16, Float32, Int32
+from cutlass import const_expr, Float16, Float32, Int32, Int64
 import cutlass.cute as cute
 from cutlass.cute.runtime import from_dlpack
 from cutlass.cutlass_dsl import T, dsl_user_op
@@ -183,10 +183,10 @@ def reduce_kernel(
     else:
         mbar_ptr = None
     
-    # Error! local_tile int32 will out of bound
-    # gX = cute.local_tile(mX, tiler_mn, (bx, by))
-    gX = domain_offset_i64((bx*tiler_mn[0], 0), mX)
-    gX = cute.local_tile(gX, tiler_mn, (0, by))
+    # Attention! local_tile int32 will out of bound
+    gX = cute.local_tile(mX, tiler_mn, (Int64(bx), Int64(by)))
+    # gX = domain_offset_i64((bx*tiler_mn[0], 0), mX)
+    # gX = cute.local_tile(gX, tiler_mn, (0, by))
     tiled_g2s_copy = cute.make_tiled_copy(
         cute.make_copy_atom(
             cute.nvgpu.CopyUniversalOp(),
@@ -306,7 +306,8 @@ def reduce_launcher(
 
 
 torch.manual_seed(22)
-for i in [2, 4, 16, 32, 64, 128]:
+# for i in [2, 4, 16, 32, 64, 128]:
+for i in [128]:
     M, N = 32*1024, i*1024
     x = torch.randn(M, N, device="cuda", dtype=torch.float16)
     y = torch.zeros(M, device="cuda", dtype=torch.float16)
