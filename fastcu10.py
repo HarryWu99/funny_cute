@@ -172,7 +172,10 @@ def gemm_kernel(
         acc_shape = tiled_mma.partition_shape_C(
             (BM, BN)
         )
-        tCrC = cute.make_fragment(acc_shape, Float32)
+        tCrC = tiled_mma.make_fragment_C(tiled_mma.partition_shape_C(
+            (BM, BN)
+        ))
+        # tCrC = cute.make_fragment(acc_shape, Float32)
         print(f"tCgC={tCgC}")
         print(f"tCsC={tCsC}")
         print(f"tCrC={tCrC}")
