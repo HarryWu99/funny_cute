@@ -388,7 +388,6 @@ class MLA_KVCACHE_FWD:
         sScale0 = storage.smem_sScale0.get_tensor((self.block_size_m,))
         sScale1 = storage.smem_sScale1.get_tensor((self.block_size_m,))
 
-
         sO_addr = sK0.iterator
         print(f"sQ={sQ}")
         gK = mK[None,None,k_head_idx,None]
@@ -414,6 +413,11 @@ class MLA_KVCACHE_FWD:
         end_idx = tile_scheduler_metadata[partition_idx, 2]
         end_seqlen = tile_scheduler_metadata[partition_idx, 3]
         begin_n_split_idx = tile_scheduler_metadata[partition_idx, 4]
+
+        tiled_mma_qk_sq.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, True)
+        tiled_mma_qk_rq.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, True)
+        tiled_mma_pv_localP.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, True)
+        tiled_mma_pv_remoteP.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, True)
 
         self.launch_q_copy(
             tma_atom_Q, mQ, sQ, begin_idx, m_block_idx, k_head_idx, barrier_q
@@ -767,20 +771,13 @@ class MLA_KVCACHE_FWD:
                 )
         
         if const_expr(PHASE_IDX == 0):
-            # tiled_mma_qk_sq.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, False)
-            # tiled_mma_qk_rq.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, True)
+            rP.fill(0)
             for i in cutlass.range_constexpr(4):
-                self.qkt_gemm_one_tile_sQ(
-                    tiled_mma_qk_sq,
-                    tPsQ[None,None,None,i],
-                    tPsK[None,None,None,i],
-                    rP,
-                    barriers + i,
-                    cur_phase, idx_in_warpgroup)
-                # qkt_gemm_one_tile(i)
+                qkt_gemm_one_tile(i)
         elif const_expr(PHASE_IDX == 1):
             # tiled_mma_qk_sq.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, False)
             # tiled_mma_qk_rq.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, True)
+            rP.fill(0)
             for i in cutlass.range_constexpr(4, 4+9):
                 qkt_gemm_one_tile(i%9)
             cur_phase[0] ^= True
@@ -811,7 +808,6 @@ class MLA_KVCACHE_FWD:
         cute.nvgpu.warpgroup.fence()
         # wgmma k is 16, sQ k is 64, so have 4 ktiles
         cute.gemm(tiled_mma, rP, tPrQ[None,None,0], tPrK[None,None,0], rP)
-        # tiled_mma.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, True)
         cute.gemm(tiled_mma, rP, tPrQ[None,None,1], tPrK[None,None,1], rP)
         cute.gemm(tiled_mma, rP, tPrQ[None,None,2], tPrK[None,None,2], rP)
         cute.gemm(tiled_mma, rP, tPrQ[None,None,3], tPrK[None,None,3], rP)
@@ -825,7 +821,7 @@ class MLA_KVCACHE_FWD:
         tPsK: cute.Tensor,
         rP: cute.Tensor,
         barrier: cute.Pointer,
-        cur_phase: Int32,
+        cur_phase: cute.Tensor,
         idx_in_warpgroup: Int32,
     ):
         tPrK = tiled_mma.make_fragment_B(tPsK)
@@ -835,7 +831,6 @@ class MLA_KVCACHE_FWD:
         cute.nvgpu.warpgroup.fence()
         # wgmma k is 16, sQ k is 64, so have 4 ktiles
         cute.gemm(tiled_mma, rP, tPrQ[None,None,0], tPrK[None,None,0], rP)
-        # tiled_mma.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, True)
         cute.gemm(tiled_mma, rP, tPrQ[None,None,1], tPrK[None,None,1], rP)
         cute.gemm(tiled_mma, rP, tPrQ[None,None,2], tPrK[None,None,2], rP)
         cute.gemm(tiled_mma, rP, tPrQ[None,None,3], tPrK[None,None,3], rP)
@@ -1129,10 +1124,7 @@ class MLA_KVCACHE_FWD:
     ):
         cute.nvgpu.warpgroup.fence()
         if const_expr(zero_init):
-            # tiled_mma.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, False)
-            print(f"run_gemm")
-            print(f"tCrA={tCrA}")
-            print(f"tCrB={tCrB}")
+            tCrC.fill(0.0)
             for k_block in cutlass.range(cute.size(tCrA, mode=[2]), unroll_full=True):
                 cute.gemm(
                     tiled_mma,
@@ -1141,9 +1133,7 @@ class MLA_KVCACHE_FWD:
                     tCrB[None,None,k_block],
                     tCrC,
                 )
-                # tiled_mma.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, True)
         else:
-            tiled_mma.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, True)
             for k_block in cutlass.range(cute.size(tCrA, mode=[2]), unroll_full=True):
                 cute.gemm(
                     tiled_mma,
