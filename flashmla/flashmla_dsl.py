@@ -419,9 +419,12 @@ class MLA_KVCACHE_FWD:
         tiled_mma_pv_localP.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, True)
         tiled_mma_pv_remoteP.set(cute.nvgpu.warpgroup.Field.ACCUMULATE, True)
 
-        self.launch_q_copy(
-            tma_atom_Q, mQ, sQ, begin_idx, m_block_idx, k_head_idx, barrier_q
-        )
+        if begin_idx >= self.b:
+            end_idx = begin_idx-1
+        else:
+            self.launch_q_copy(
+                tma_atom_Q, mQ, sQ, begin_idx, m_block_idx, k_head_idx, barrier_q
+            )
 
         for batch_idx in cutlass.range(begin_idx, end_idx+1, 1, unroll=1):
             kBlockN = self.page_block_size
@@ -467,8 +470,6 @@ class MLA_KVCACHE_FWD:
             self.retrieve_rP_from_sP(rQ8, cute.local_tile(sQ, (64, 64), (0, 8)), idx_in_warpgroup, tiled_mma_pv_localP)
 
             rP0_layout = tiled_mma_qk_sq.partition_shape_C((self.block_size_m, self.page_block_size))
-            if bz==0 and tid==0:
-                cute.printf("before producer, is_no_split={}", is_no_split)
             if warpgroup_idx == 0:
                 rP0 = cute.make_rmem_tensor(rP0_layout, Float32)
                 for i in cutlass.range_constexpr(9):
@@ -481,11 +482,6 @@ class MLA_KVCACHE_FWD:
                 # wait for the previous write to sM is finished
                 cute.arch.barrier(barrier_id=NamedBarriers.sMInitialized, number_of_threads=128)
                 cute.nvgpu.warpgroup.wait_group(0)
-
-                # def launch_wg0_subroutine(is_blk0_last, is_blk1_last, block_idx_arg):
-                #     self.wg0_subroutine(
-                #         is_blk0_last, is_blk1_last,
-                #     )
                 
                 wg0_params = (
                     tma_atom_K,
@@ -498,15 +494,15 @@ class MLA_KVCACHE_FWD:
                     cur_block_table,
                     v_smem_layout, seqlen_k, end_block_idx, idx_in_warpgroup)
 
-                # block_idx = start_block_idx
-                # while block_idx < end_block_idx-2:
-                #     self.wg0_subroutine(False, False, block_idx, *wg0_params)
-                #     block_idx += 2
+                block_idx = start_block_idx
+                while block_idx < end_block_idx-2:
+                    self.wg0_subroutine(False, False, block_idx, *wg0_params)
+                    block_idx += 2
 
-                # if block_idx+1 < end_block_idx:
-                #     self.wg0_subroutine(False, True, block_idx, *wg0_params)
-                # elif block_idx < end_block_idx:
-                #     self.wg0_subroutine(True, False, block_idx, *wg0_params)
+                if block_idx+1 < end_block_idx:
+                    self.wg0_subroutine(False, True, block_idx, *wg0_params)
+                elif block_idx < end_block_idx:
+                    self.wg0_subroutine(True, False, block_idx, *wg0_params)
             else:
                 # warpgroup 1
                 rP1 = cute.make_rmem_tensor(rP0_layout, Float32)
@@ -515,19 +511,6 @@ class MLA_KVCACHE_FWD:
                     self.warpgroup_cooperative_qkt_gemm(1, sQ, sK1, rP1, rQ8, tiled_mma_qk_sq, tiled_mma_qk_rq, barriers_k1, cur_phase_K1, idx_in_warpgroup)
                     cute.nvgpu.warpgroup.wait_group(0)
 
-                # def launch_wg1_subroutine(is_blk0_last, is_blk1_last, is_blk2_last):
-                #     self.wg1_subroutine(
-                #         is_blk0_last, is_blk1_last, is_blk2_last,
-                #         tma_atom_K,
-                #         tiled_mma_pv_localP, tiled_mma_pv_remoteP,
-                #         tiled_mma_qk_sq, tiled_mma_qk_rq,
-                #         gK, sQ, sK0, sK1, sP0, sP1, sM,
-                #         sScale0, sScale1,
-                #         rQ8, rP1, rO, rL, rRightBorderForQSeq,
-                #         barriers_k0, barriers_k1, cur_phase_K1,
-                #         cur_block_table,
-                #         v_smem_layout, seqlen_k, block_idx, end_block_idx, idx_in_warpgroup
-                #     )
                 wg1_params = (
                     tma_atom_K,
                     tiled_mma_pv_localP, tiled_mma_pv_remoteP,
@@ -540,96 +523,86 @@ class MLA_KVCACHE_FWD:
                     v_smem_layout, seqlen_k, end_block_idx, idx_in_warpgroup
                 )
 
-                # block_idx = start_block_idx
-                # while block_idx < end_block_idx-3:
-                #     self.wg1_subroutine(False, False, False, block_idx, *wg1_params)
-                #     block_idx += 2
+                block_idx = start_block_idx
+                while block_idx < end_block_idx-3:
+                    self.wg1_subroutine(False, False, False, block_idx, *wg1_params)
+                    block_idx += 2
                 
-                # if block_idx+2 < end_block_idx:
-                #     self.wg1_subroutine(False, False, True, block_idx, *wg1_params)
-                #     block_idx += 2
-                #     self.wg1_subroutine(True, False, False, block_idx, *wg1_params)
-                # elif block_idx+1 < end_block_idx:
-                #     self.wg1_subroutine(False, True, False, block_idx, *wg1_params)
-                # elif block_idx < end_block_idx:
-                #     self.wg1_subroutine(True, False, False, block_idx, *wg1_params)
+                if block_idx+2 < end_block_idx:
+                    self.wg1_subroutine(False, False, True, block_idx, *wg1_params)
+                    block_idx += 2
+                    self.wg1_subroutine(True, False, False, block_idx, *wg1_params)
+                elif block_idx+1 < end_block_idx:
+                    self.wg1_subroutine(False, True, False, block_idx, *wg1_params)
+                elif block_idx < end_block_idx:
+                    self.wg1_subroutine(True, False, False, block_idx, *wg1_params)
             
-            if bz==0 and (tid==0 or tid==128):
-                cute.printf("after branch, tid={}", tid)
-            rL[0] += cute.arch.shuffle_sync_bfly(rL[0], offset=1)
-            rL[0] += cute.arch.shuffle_sync_bfly(rL[0], offset=2)
-            rL[1] += cute.arch.shuffle_sync_bfly(rL[1], offset=1)
-            rL[1] += cute.arch.shuffle_sync_bfly(rL[1], offset=2)
-
-            if bz==0 and (tid==0 or tid==128):
-                cute.printf("before sl reduce, tid={}", tid)
-
-            my_row = self.get_AorC_row_idx(0, idx_in_warpgroup)
-            if idx_in_warpgroup % 4 == 0:
-                sL_reduction_wksp[my_row + warpgroup_idx*64] = rL[0]
-                sL_reduction_wksp[my_row+8 + warpgroup_idx*64] = rL[1]
-            cute.arch.sync_threads()
-            if warpgroup_idx == 0:
-                rL[0] += sL_reduction_wksp[my_row + 64]
-                rL[1] += sL_reduction_wksp[my_row + 8 + 64]
-            else:
-                if idx_in_warpgroup % 4 == 0:
-                    sL_reduction_wksp[my_row] += rL[0]
-                    sL_reduction_wksp[my_row + 8] += rL[1]
-                cute.arch.sync_warp()
-                rL[0] = sL_reduction_wksp[my_row]
-                rL[1] = sL_reduction_wksp[my_row + 8]
-            # Prune out when rL is 0 or NaN
-            rL[0] = 1.0 if rL[0] == 0.0 or rL[0] != rL[0] else rL[0]
-            rL[1] = 1.0 if rL[1] == 0.0 or rL[1] != rL[1] else rL[1]
-            
-            if bz==0 and tid==0:
-                cute.printf("before launch_q_copy")
-            if batch_idx+1 <= end_idx:
-                self.launch_q_copy(
-                    tma_atom_Q, mQ, sQ, batch_idx+1, m_block_idx, k_head_idx, barrier_q
-                )
-            else:
-                # cudaTriggerProgrammaticLaunchCompletion
+            if begin_idx >= self.b:
                 pass
-
-            if bz==0 and tid==0:
-                cute.printf("before store_o")
-            
-            num_valid_seq_q = min(self.q_seq_per_hk - m_block_idx * self.block_size_m, self.block_size_m)
-            if is_no_split:
-                # self.store_o(True, rO, gO, tma_atom_O, rL, sO_addr, tiled_mma_pv_localP, batch_idx, k_head_idx, m_block_idx, num_valid_seq_q, warpgroup_idx, idx_in_warpgroup)
-                i = tid
-                if i < num_valid_seq_q:
-                    cur_L = sL_reduction_wksp[i]
-                    gSoftmaxLse[i] = float('inf') if cur_L == 0.0 or cur_L != cur_L else cute.log(cur_L) + sM[i] / Float32(M_LOG2E)
-                if bz==0 and tid==0:
-                    cute.printf("before bulk wait_group")
-                cute.arch.cp_async_bulk_wait_group(0)
-                if bz==0 and tid==0:
-                    cute.printf("after bulk wait_group")
             else:
-                split_idx = num_splits[batch_idx] + n_split_idx
-                cur_o_ptr = oaccum_ptr + ((split_idx*self.h_k + k_head_idx)*self.q_seq_per_hk + m_block_idx*self.block_size_m)*self.head_dim_v
-                cur_lse_ptr = softmax_lse_accum_ptr + (split_idx*self.h_k + k_head_idx)*self.q_seq_per_hk + m_block_idx*self.block_size_m
-                gOAccum = cute.make_tensor(
-                    oaccum_ptr,
-                    cute.make_ordered_layout((self.block_size_m, self.head_dim_v), order=(1, 0))
-                )
-                gLseAccum = cute.make_tensor(
-                    oaccum_ptr,
-                    (self.block_size_m,)
-                )
-                # self.store_o(False, rO, gOAccum, tma_atom_O, rL, sO_addr, tiled_mma_pv_localP, batch_idx, k_head_idx, m_block_idx, num_valid_seq_q, warpgroup_idx, idx_in_warpgroup)
-                
-                i = tid
-                if i < num_valid_seq_q:
-                    cur_L = sL_reduction_wksp[i]
-                    gLseAccum[i] = -float('inf') if cur_L == 0.0 or cur_L != cur_L else cute.log2(cur_L) + sM[i]
-                cute.arch.cp_async_bulk_wait_group(0)
+                rL[0] += cute.arch.shuffle_sync_bfly(rL[0], offset=1)
+                rL[0] += cute.arch.shuffle_sync_bfly(rL[0], offset=2)
+                rL[1] += cute.arch.shuffle_sync_bfly(rL[1], offset=1)
+                rL[1] += cute.arch.shuffle_sync_bfly(rL[1], offset=2)
 
-            if batch_idx != end_idx:
+                my_row = self.get_AorC_row_idx(0, idx_in_warpgroup)
+                if idx_in_warpgroup % 4 == 0:
+                    sL_reduction_wksp[my_row + warpgroup_idx*64] = rL[0]
+                    sL_reduction_wksp[my_row+8 + warpgroup_idx*64] = rL[1]
                 cute.arch.sync_threads()
+                if warpgroup_idx == 0:
+                    rL[0] += sL_reduction_wksp[my_row + 64]
+                    rL[1] += sL_reduction_wksp[my_row + 8 + 64]
+                else:
+                    if idx_in_warpgroup % 4 == 0:
+                        sL_reduction_wksp[my_row] += rL[0]
+                        sL_reduction_wksp[my_row + 8] += rL[1]
+                    cute.arch.sync_warp()
+                    rL[0] = sL_reduction_wksp[my_row]
+                    rL[1] = sL_reduction_wksp[my_row + 8]
+                # Prune out when rL is 0 or NaN
+                rL[0] = 1.0 if rL[0] == 0.0 or rL[0] != rL[0] else rL[0]
+                rL[1] = 1.0 if rL[1] == 0.0 or rL[1] != rL[1] else rL[1]
+                
+                if batch_idx+1 <= end_idx:
+                    self.launch_q_copy(
+                        tma_atom_Q, mQ, sQ, batch_idx+1, m_block_idx, k_head_idx, barrier_q
+                    )
+                else:
+                    # cudaTriggerProgrammaticLaunchCompletion
+                    pass
+
+                num_valid_seq_q = min(self.q_seq_per_hk - m_block_idx * self.block_size_m, self.block_size_m)
+                if is_no_split:
+                    self.store_o(True, rO, gO, tma_atom_O, rL, sO_addr, tiled_mma_pv_localP, batch_idx, k_head_idx, m_block_idx, num_valid_seq_q, warpgroup_idx, idx_in_warpgroup)
+                    i = tid
+                    if i < num_valid_seq_q:
+                        cur_L = sL_reduction_wksp[i]
+                        gSoftmaxLse[i] = float('inf') if cur_L == 0.0 or cur_L != cur_L else cute.log(cur_L) + sM[i] / Float32(M_LOG2E)
+                    cute.arch.cp_async_bulk_wait_group(0)
+                else:
+                    # not use for now
+                    split_idx = num_splits[batch_idx] + n_split_idx
+                    cur_o_ptr = oaccum_ptr + ((split_idx*self.h_k + k_head_idx)*self.q_seq_per_hk + m_block_idx*self.block_size_m)*self.head_dim_v
+                    cur_lse_ptr = softmax_lse_accum_ptr + (split_idx*self.h_k + k_head_idx)*self.q_seq_per_hk + m_block_idx*self.block_size_m
+                    gOAccum = cute.make_tensor(
+                        oaccum_ptr,
+                        cute.make_ordered_layout((self.block_size_m, self.head_dim_v), order=(1, 0))
+                    )
+                    gLseAccum = cute.make_tensor(
+                        oaccum_ptr,
+                        (self.block_size_m,)
+                    )
+                    self.store_o(False, rO, gOAccum, tma_atom_O, rL, sO_addr, tiled_mma_pv_localP, batch_idx, k_head_idx, m_block_idx, num_valid_seq_q, warpgroup_idx, idx_in_warpgroup)
+                    
+                    i = tid
+                    if i < num_valid_seq_q:
+                        cur_L = sL_reduction_wksp[i]
+                        gLseAccum[i] = -float('inf') if cur_L == 0.0 or cur_L != cur_L else cute.log2(cur_L) + sM[i]
+                    cute.arch.cp_async_bulk_wait_group(0)
+
+                if batch_idx != end_idx:
+                    cute.arch.sync_threads()
 
     @cute.jit
     def launch_q_copy(
@@ -674,7 +647,7 @@ class MLA_KVCACHE_FWD:
         sK: cute.Tensor,
         barriers_K: cute.Pointer,
     ):
-        for i in cutlass.range_constexpr(start_tile_idx, end_tile_idx+1):
+        for i in cutlass.range_constexpr(start_tile_idx, end_tile_idx):
             warp_idx = cute.arch.warp_idx()
             if warp_idx % 4 == 0:
                 # directly use tma_partition is not work. terminate called after throwing an instance of 'std::bad_variant_access' what():  Unexpected index
@@ -767,7 +740,6 @@ class MLA_KVCACHE_FWD:
 
         def qkt_gemm_one_tile(tile_idx: cutlass.Constexpr):
             if const_expr(tile_idx != 8):
-                # print(f"qkt_gemm_one_tile_sQ")
                 self.qkt_gemm_one_tile_sQ(
                     tiled_mma_qk_sq,
                     tPsQ[None,None,None,tile_idx],
@@ -777,7 +749,6 @@ class MLA_KVCACHE_FWD:
                     cur_phase, idx_in_warpgroup
                 )
             else:
-                # print(f"qkt_gemm_one_tile_rQ")
                 self.qkt_gemm_one_tile_rQ(
                     tiled_mma_qk_rq,
                     rQ8,
@@ -786,9 +757,6 @@ class MLA_KVCACHE_FWD:
                     barriers + tile_idx,
                     cur_phase, idx_in_warpgroup
                 )
-        bx, by, bz = cute.arch.block_idx()
-        if bz==0 and idx_in_warpgroup==0:
-            cute.printf("PHASE_IDX={}, barriers={}, cur_phase={}", PHASE_IDX, barriers, cur_phase)
         
         if const_expr(PHASE_IDX == 0):
             rP.fill(0)
@@ -824,12 +792,7 @@ class MLA_KVCACHE_FWD:
         tPrK = tiled_mma.make_fragment_B(tPsK)
         if idx_in_warpgroup == 0:
             cute.arch.mbarrier_arrive_and_expect_tx(barrier, 64*64*2)
-        bx, by, bz = cute.arch.block_idx()
-        if bz==0 and idx_in_warpgroup==0:
-            cute.printf("qkt_gemm_one_tile_sQ before wait, barriers={}, cur_phase={}", barrier, cur_phase[0])
         cute.arch.mbarrier_wait(barrier, cur_phase[0])
-        if bz==0 and idx_in_warpgroup==0:
-            cute.printf("qkt_gemm_one_tile_sQ after wait, barriers={}, cur_phase={}", barrier, cur_phase[0])
         cute.nvgpu.warpgroup.fence()
         # wgmma k is 16, sQ k is 64, so have 4 ktiles
         cute.gemm(tiled_mma, rP, tPrQ[None,None,0], tPrK[None,None,0], rP)
@@ -1213,13 +1176,10 @@ class MLA_KVCACHE_FWD:
         idx_in_warpgroup: Int32,
     ):
         sV_int64 = cute.make_tensor(
-            cute.make_ptr(Int64, sV.iterator.toint(), cute.AddressSpace.smem),
+            cute.recast_ptr(sV.iterator, dtype=Int64),
             cute.tile_to_shape(
-                make_smem_layout_atom(
-                    cute.nvgpu.warpgroup.SmemLayoutAtomKind.MN_SW128, Int64,
-                ),
-                (256 // (64//16), self.page_block_size),
-                order=(1, 0),
+                cute.make_ordered_layout((16, 8), order=(0, 1)),
+                (64, self.page_block_size), order=(1, 0)
             )
         )
         valid_window_size = max(valid_window_size, 0)
@@ -1640,19 +1600,27 @@ def mla_kvcache_fwd(
 if __name__ == "__main__":
     torch.set_default_device(torch.cuda.current_device())
     torch.manual_seed(22)
-    q = torch.randn(2, 1, 64, 576, device="cuda", dtype=torch.float16)
+    q = torch.randn(32, 1, 64, 576, device="cuda", dtype=torch.float16)
     kvcache = torch.randn(4096, 64, 1, 576, device="cuda", dtype=torch.float16)
-    seqlens_k = torch.tensor([400, 3], device="cuda", dtype=torch.int32)
-    page_table = torch.ones(2, 32, device="cuda", dtype=torch.int32)
+    seqlens_k = torch.tensor([4000]*32, device="cuda", dtype=torch.int32)
+    page_table = torch.randperm(2048, dtype=torch.int32, device="cuda")
+    page_table = page_table.reshape(32, 64)
+
     tile_scheduler_metadata = torch.zeros(78, 8, device="cuda", dtype=torch.int32)
     tile_scheduler_metadata[:, 0] = torch.arange(78, dtype=torch.int32)
     tile_scheduler_metadata[:, 2] = torch.arange(78, dtype=torch.int32)
     tile_scheduler_metadata[:, 4] = torch.arange(78, dtype=torch.int32)
-    tile_scheduler_metadata[:2, 3] = seqlens_k
-    num_splits = torch.arange(3, device="cuda", dtype=torch.int32)
+    tile_scheduler_metadata[:32, 3] = seqlens_k
+    num_splits = torch.arange(33, device="cuda", dtype=torch.int32)
 
     from flash_mla import flash_mla_with_kvcache
-    ref_o, _ = flash_mla_with_kvcache(
+    # t1, n1 = get_mla_metadata(
+    #     seqlens_k,
+    #     64,   # num_q_tokens_per_head_k (seqlen_q_ori * num_heads_q // num_heads_k)
+    #     1,    # num_heads_k
+    #     64,   # num_heads_q
+    # )
+    ref_o, ref_lse = flash_mla_with_kvcache(
         q, kvcache,
         page_table, seqlens_k,
         512,
@@ -1669,12 +1637,17 @@ if __name__ == "__main__":
         tile_scheduler_metadata,
         num_splits,
     )
-    torch.set_printoptions(sci_mode=False)
-    print(ref_o.shape)
-    # print(f"{ref_o[0,0,:, :10]=}")
-    # print(f"{o[0,0,:,:10]=}")
-    calc_cos = lambda a, b: 1 - 2 * (a * b).sum().item() / max((a * a + b * b).sum().item(), 1e-12)
-    e1 = calc_cos(ref_o[0], o[0])
-    print(e1)
-    e2 = calc_cos(ref_o[1], o[1])
-    print(e2)
+
+    def calc_cos(a, b):
+        a = a.double()
+        b = b.double()
+        ret = 1 - 2 * (a * b).sum() / max((a * a + b * b).sum(), 1e-12)
+        return ret.item()
+
+    o_cos = calc_cos(ref_o, o)
+    o_max_abs = (ref_o.float() - o.float()).abs().max().item()
+    lse_cos = calc_cos(ref_lse, lse)
+    lse_max_abs = (ref_lse.float() - lse.float()).abs().max().item()
+    print(f"seqlen={seqlens_k} (is_no_split=True)")
+    print(f"  lse_cos={lse_cos}, lse_max_abs={lse_max_abs}")
+    print(f"  o_cos={o_cos}, o_max_abs={o_max_abs}")
